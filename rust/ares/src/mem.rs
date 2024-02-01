@@ -142,6 +142,14 @@ impl NockStack {
         self.frame_pointer
     }
 
+    pub unsafe fn get_frame_lowest(&self) -> *mut u64 {
+        if self.is_west() {
+            *(self.slot_pointer_west(ALLOC)) as *mut u64
+        } else {
+            self.stack_pointer
+        }
+    }
+
     /** Current stack pointer of this NockStack */
     pub fn get_stack_pointer(&self) -> *const u64 {
         self.stack_pointer
@@ -649,6 +657,52 @@ impl NockStack {
         self.pc = false;
     }
 
+    /** Resize a frame on the stack to contain more or less locals
+     *
+     * # Safety
+     *
+     * This will clobber locals. Instead of using locals, reference off of [get_frame_lowest].
+     *
+     * This will panic if you have called [preserve] and not yet [frame_pop].
+     *
+     * This will panic if the lightweight stack is not empty.
+     */
+    pub unsafe fn frame_replace(&mut self, num_locals: usize) {
+        assert!(!self.pc); // Don't resize a frame when in the middle of preserving
+        assert!(self.stack_is_empty()); // Don't resize a frame if there is an active lightweight stack
+
+        // When a frame is pushed, we offset the frame pointer from the previous allocation
+        // pointer. So here we duplicate that logic, but with the east/west conditional inverted
+        // because we are not switching sides.
+        //
+        // A frame is the space between the previous allocation pointer and the frame pointer.
+        // Since we are moving the frame pointer, we're going to be moving frame contents to match.
+        let prev_alloc_pointer = *(self.slot_pointer(ALLOC)) as *mut u64;
+        let new_frame_pointer = if self.is_west() {
+            prev_alloc_pointer.add(num_locals + RESERVED)
+        } else {
+            prev_alloc_pointer.sub(num_locals + RESERVED)
+        };
+
+        if self.is_west() {
+            let current_backref_base = self.frame_pointer.sub(RESERVED);
+            let new_backref_base = new_frame_pointer.sub(RESERVED);
+            std::ptr::copy(current_backref_base, new_backref_base, RESERVED);
+        } else {
+            let old_frame_size = prev_alloc_pointer.offset_from(self.frame_pointer);
+            let new_frame_size = prev_alloc_pointer.offset_from(new_frame_pointer);
+            assert!(old_frame_size > 0);
+            assert!(new_frame_size > 0);
+            std::ptr::copy(
+                self.frame_pointer,
+                new_frame_pointer,
+                std::cmp::min(old_frame_size, new_frame_size) as usize,
+            );
+        }
+        self.frame_pointer = new_frame_pointer;
+        self.stack_pointer = self.frame_pointer;
+    }
+
     /** Run a closure inside a frame, popping regardless of the value returned by the closure.
      * This is useful for writing fallible computations with the `?` operator.
      *
@@ -858,6 +912,7 @@ impl Preserve for IndirectAtom {
         let size = indirect_raw_size(*self);
         let buf = stack.struct_alloc_in_previous_frame::<u64>(size);
         copy_nonoverlapping(self.to_raw_pointer(), buf, size);
+        self.set_forwarding_pointer(buf);
         *self = IndirectAtom::from_raw_pointer(buf);
     }
     unsafe fn assert_in_stack(&self, stack: &NockStack) {

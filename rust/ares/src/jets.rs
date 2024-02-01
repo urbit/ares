@@ -15,6 +15,7 @@ pub mod serial;
 pub mod sort;
 pub mod tree;
 
+use crate::codegen::types::CGContext;
 use crate::interpreter::{Context, Error};
 use crate::jets::bits::*;
 use crate::jets::cold::Cold;
@@ -320,6 +321,7 @@ pub mod util {
             let warm = Warm::new(&mut stack);
             let hot = Hot::init(&mut stack, URBIT_HOT_STATE);
             let cache = Hamt::<Noun>::new(&mut stack);
+            let cg_context = CGContext::new(&mut stack, hot);
 
             Context {
                 stack,
@@ -330,6 +332,7 @@ pub mod util {
                 cache,
                 scry_stack: D(0),
                 trace_info: None,
+                cg_context,
             }
         }
 

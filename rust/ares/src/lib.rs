@@ -3,6 +3,7 @@ extern crate num_derive;
 extern crate lazy_static;
 #[macro_use]
 extern crate static_assertions;
+pub mod codegen;
 pub mod hamt;
 pub mod interpreter;
 pub mod jets;
@@ -12,6 +13,7 @@ pub mod newt;
 pub mod noun;
 pub mod serf;
 //pub mod bytecode;
+pub mod load;
 pub mod persist;
 pub mod serialization;
 pub mod trace;

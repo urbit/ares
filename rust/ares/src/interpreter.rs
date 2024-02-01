@@ -1,6 +1,7 @@
 use crate::assert_acyclic;
 use crate::assert_no_forwarding_pointers;
 use crate::assert_no_junior_pointers;
+use crate::codegen::types::CGContext;
 use crate::hamt::Hamt;
 use crate::jets::cold;
 use crate::jets::cold::Cold;
@@ -269,6 +270,17 @@ pub struct Context {
     pub cache: Hamt<Noun>,
     pub scry_stack: Noun,
     pub trace_info: Option<TraceInfo>,
+    pub cg_context: CGContext,
+}
+
+impl Context {
+    pub unsafe fn preserve(&mut self) {
+        self.stack.preserve(&mut self.cold);
+        self.stack.preserve(&mut self.warm);
+        self.stack.preserve(&mut self.cache);
+        self.stack.preserve(&mut self.scry_stack);
+        self.stack.preserve(&mut self.cg_context);
+    }
 }
 
 impl Context {
@@ -357,7 +369,7 @@ fn debug_assertions(stack: &mut NockStack, noun: Noun) {
     assert_no_junior_pointers!(stack, noun);
 }
 
-/** Interpret nock */
+/// Interpret nock.
 pub fn interpret(context: &mut Context, mut subject: Noun, formula: Noun) -> Result {
     let terminator = Arc::clone(&TERMINATOR);
     let orig_subject = subject; // for debugging
@@ -367,12 +379,14 @@ pub fn interpret(context: &mut Context, mut subject: Noun, formula: Noun) -> Res
 
     // Setup stack for Nock computation
     unsafe {
-        context.stack.frame_push(2);
+        context.stack.frame_push(3);
 
         // Bottom of mean stack
         *(context.stack.local_noun_pointer(0)) = D(0);
         // Bottom of trace stack
         *(context.stack.local_noun_pointer(1) as *mut *const TraceStack) = std::ptr::null();
+        // Bottom of slow stack
+        *(context.stack.local_noun_pointer(2)) = D(0);
 
         *(context.stack.push()) = NockWork::Done;
     };
@@ -397,38 +411,32 @@ pub fn interpret(context: &mut Context, mut subject: Noun, formula: Noun) -> Res
                 NockWork::Done => {
                     write_trace(context);
 
-                    let stack = &mut context.stack;
-                    debug_assertions(stack, orig_subject);
-                    debug_assertions(stack, subject);
-                    debug_assertions(stack, res);
+                    debug_assertions(&mut context.stack, orig_subject);
+                    debug_assertions(&mut context.stack, subject);
+                    debug_assertions(&mut context.stack, res);
 
-                    stack.preserve(&mut context.cache);
-                    stack.preserve(&mut context.cold);
-                    stack.preserve(&mut context.warm);
-                    stack.preserve(&mut res);
-                    stack.frame_pop();
+                    context.preserve();
+                    context.stack.preserve(&mut res);
+                    context.stack.frame_pop();
 
-                    debug_assertions(stack, orig_subject);
-                    debug_assertions(stack, res);
+                    debug_assertions(&mut context.stack, orig_subject);
+                    debug_assertions(&mut context.stack, res);
 
                     break Ok(res);
                 }
                 NockWork::Ret => {
                     write_trace(context);
 
-                    let stack = &mut context.stack;
-                    debug_assertions(stack, orig_subject);
-                    debug_assertions(stack, subject);
-                    debug_assertions(stack, res);
+                    debug_assertions(&mut context.stack, orig_subject);
+                    debug_assertions(&mut context.stack, subject);
+                    debug_assertions(&mut context.stack, res);
 
-                    stack.preserve(&mut context.cache);
-                    stack.preserve(&mut context.cold);
-                    stack.preserve(&mut context.warm);
-                    stack.preserve(&mut res);
-                    stack.frame_pop();
+                    context.preserve();
+                    context.stack.preserve(&mut res);
+                    context.stack.frame_pop();
 
-                    debug_assertions(stack, orig_subject);
-                    debug_assertions(stack, res);
+                    debug_assertions(&mut context.stack, orig_subject);
+                    debug_assertions(&mut context.stack, res);
                 }
                 NockWork::WorkCons(mut cons) => match cons.todo {
                     TodoCons::ComputeHead => {
@@ -1136,7 +1144,7 @@ fn push_formula(stack: &mut NockStack, formula: Noun, tail: bool) -> result::Res
     Ok(())
 }
 
-fn exit(
+pub fn exit(
     context: &mut Context,
     snapshot: &ContextSnapshot,
     virtual_frame: *const u64,
@@ -1169,20 +1177,19 @@ fn exit(
     }
 }
 
-/** Push frame onto NockStack while preserving the mean stack.
- */
-fn mean_frame_push(stack: &mut NockStack, slots: usize) {
+/// Push frame onto NockStack while preserving the mean and slow stacks.
+pub fn mean_frame_push(stack: &mut NockStack, slots: usize) {
     unsafe {
         let trace = *(stack.local_noun_pointer(0));
-        stack.frame_push(slots + 2);
+        stack.frame_push(slots + 3);
         *(stack.local_noun_pointer(0)) = trace;
         *(stack.local_noun_pointer(1) as *mut *const TraceStack) = std::ptr::null();
+        // *(stack.local_noun_pointer(2) as *mut *const SlowStack) = std::ptr::null();
     }
 }
 
-/** Push onto the mean stack.
- */
-fn mean_push(stack: &mut NockStack, noun: Noun) {
+/// Push onto the mean stack.
+pub fn mean_push(stack: &mut NockStack, noun: Noun) {
     unsafe {
         let cur_trace = *(stack.local_noun_pointer(0));
         let new_trace = T(stack, &[noun, cur_trace]);
@@ -1190,9 +1197,8 @@ fn mean_push(stack: &mut NockStack, noun: Noun) {
     }
 }
 
-/** Pop off of the mean stack.
- */
-fn mean_pop(stack: &mut NockStack) {
+/// Pop off of the mean stack.
+pub fn mean_pop(stack: &mut NockStack) {
     unsafe {
         *(stack.local_noun_pointer(0)) = (*(stack.local_noun_pointer(0)))
             .as_cell()
@@ -1324,7 +1330,7 @@ mod hint {
         }
     }
 
-    /** Match dynamic hints before the hint formula is evaluated */
+    /// Match dynamic hints before the hint formula is evaluated.
     pub fn match_pre_hint(
         context: &mut Context,
         subject: Noun,
@@ -1412,7 +1418,7 @@ mod hint {
         }
     }
 
-    /** Match static and dynamic hints before the nock formula is evaluated */
+    /// Match static and dynamic hints before the nock formula is evaluated
     pub fn match_pre_nock(
         context: &mut Context,
         _subject: Noun,
@@ -1495,7 +1501,7 @@ mod hint {
         None
     }
 
-    /** Match static and dynamic hints after the nock formula is evaluated */
+    /// Match static and dynamic hints after the nock formula is evaluated.
     pub fn match_post_nock(
         context: &mut Context,
         subject: Noun,

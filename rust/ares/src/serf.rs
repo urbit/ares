@@ -1,3 +1,4 @@
+use crate::codegen::{cg_interpret, types::CGContext};
 use crate::hamt::Hamt;
 use crate::interpreter;
 use crate::interpreter::{inc, interpret, Error};
@@ -6,6 +7,7 @@ use crate::jets::hot::{Hot, HotEntry};
 use crate::jets::list::util::{lent, zing};
 use crate::jets::nock::util::mook;
 use crate::jets::warm::Warm;
+use crate::load::load_cg_trap;
 use crate::mem::NockStack;
 use crate::mug::*;
 use crate::newt::Newt;
@@ -110,6 +112,7 @@ impl Context {
     }
 
     pub unsafe fn save(&mut self) {
+        // XX need to save line core and codegen state
         let handle = {
             let mut snapshot = Snapshot({
                 let snapshot_mem_ptr: *mut SnapshotMem = self.nock_context.stack.struct_alloc(1);
@@ -162,6 +165,7 @@ impl Context {
         let hot = Hot::init(&mut stack, constant_hot_state);
         let warm = Warm::init(&mut stack, &mut cold, &hot);
         let mug = mug_u32(&mut stack, arvo);
+        let cg_context = CGContext::new(&mut stack, hot);
 
         let nock_context = interpreter::Context {
             stack,
@@ -172,6 +176,7 @@ impl Context {
             cache,
             scry_stack: D(0),
             trace_info,
+            cg_context,
         };
 
         Context {
@@ -340,6 +345,17 @@ pub fn serf(constant_hot_state: &[HotEntry]) -> io::Result<()> {
     let mut context = Context::load(snap_path, trace_info, constant_hot_state);
     context.ripe();
 
+    // Produce codegen core
+    let (cg_formula, cg_trap) =
+        load_cg_trap(&mut context.nock_context.stack).expect("Failed to load codegen formula/trap");
+    let line_res = interpret(&mut context.nock_context, cg_trap, cg_formula)
+        .expect("Failed to produce codegen noun");
+    unsafe {
+        assert!(slot(line_res, 2).expect("Codegen noun should be a cell").raw_equals(D(1)));
+    };
+    let line = slot(line_res, 3).expect("Codegen noun should be a cell");
+    context.nock_context.cg_context.line = Some(line);
+
     // Can't use for loop because it borrows newt
     while let Some(writ) = context.next() {
         // Reset the local cache and scry handler stack
@@ -389,6 +405,7 @@ pub fn serf(constant_hot_state: &[HotEntry]) -> io::Result<()> {
         };
 
         clear_interrupt();
+
     }
 
     Ok(())
@@ -401,7 +418,7 @@ fn slam(context: &mut Context, axis: u64, ovo: Noun) -> Result<Noun, Error> {
     let sam = T(stack, &[D(6), D(0), D(7)]);
     let fol = T(stack, &[D(8), pul, D(9), D(2), D(10), sam, D(0), D(2)]);
     let sub = T(stack, &[arvo, ovo]);
-    interpret(&mut context.nock_context, sub, fol)
+    cg_interpret(&mut context.nock_context, sub, fol)
 }
 
 fn peek(context: &mut Context, ovo: Noun) -> Noun {
@@ -468,12 +485,12 @@ fn play_life(context: &mut Context, eve: Noun) {
     let res = if context.nock_context.trace_info.is_some() {
         let trace_name = "boot";
         let start = Instant::now();
-        let boot_res = interpret(&mut context.nock_context, eve, lyf);
+        let boot_res = cg_interpret(&mut context.nock_context, eve, lyf);
         write_serf_trace_safe(&mut context.nock_context.trace_info, trace_name, start);
 
         boot_res
     } else {
-        interpret(&mut context.nock_context, eve, lyf)
+        cg_interpret(&mut context.nock_context, eve, lyf)
     };
 
     match res {

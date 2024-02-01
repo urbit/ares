@@ -1,8 +1,10 @@
 use crate::jets::*;
+use crate::mem::Preserve;
 use crate::noun::{Atom, DirectAtom, IndirectAtom, Noun, D, T};
 use ares_macros::tas;
 use either::Either::{self, Left, Right};
-use std::ptr::{copy_nonoverlapping, null_mut};
+use std::ptr::{copy_nonoverlapping};
+use std::slice::from_raw_parts_mut;
 
 /** Root for Hoon %k.139
  */
@@ -850,14 +852,33 @@ pub const URBIT_HOT_STATE: &[HotEntry] = &[
     ),
 ];
 
+#[derive(Copy,Clone)]
+pub struct LiveHotEntry {
+    pub path: Noun,
+    pub axis: Atom,
+    pub jet: Jet,
+}
+
 #[derive(Copy, Clone)]
-pub struct Hot(*mut HotMem);
+pub struct Hot {
+    length: usize,
+    buffer: *mut LiveHotEntry
+}
+
 
 impl Hot {
-    pub fn init(stack: &mut NockStack, constant_hot_state: &[HotEntry]) -> Self {
+    pub fn as_slice<'a>(&'a self) -> &'a mut [LiveHotEntry] {
         unsafe {
-            let mut next = Hot(null_mut());
-            for (htap, axe, jet) in constant_hot_state {
+            from_raw_parts_mut(self.buffer, self.length)
+        }
+    }
+
+    pub fn init(stack: &mut NockStack, constant_hot_state: &[HotEntry]) -> Self {
+        stack.frame_push(0); // we can preserve the hamt when we're done thus cleaning intermediate
+                             // allocations
+        unsafe {
+            let hot_buffer: *mut LiveHotEntry = stack.struct_alloc(constant_hot_state.len());
+            for (idx, (htap, axe, jet)) in constant_hot_state.iter().enumerate() {
                 let mut a_path = D(0);
                 for i in *htap {
                     match i {
@@ -880,61 +901,41 @@ impl Hot {
                     };
                 }
                 let axis = DirectAtom::new_panic(*axe).as_atom();
-                let hot_mem_ptr: *mut HotMem = stack.struct_alloc(1);
-                *hot_mem_ptr = HotMem {
-                    a_path,
+                *hot_buffer.add(idx) = LiveHotEntry {
                     axis,
+                    path: a_path,
                     jet: *jet,
-                    next,
-                };
-                next = Hot(hot_mem_ptr);
+                }
             }
-            next
+            let mut hot = Hot {
+                buffer: hot_buffer,
+                length: constant_hot_state.len(),
+            };
+            stack.preserve(&mut hot);
+            stack.frame_pop();
+            hot
         }
     }
-}
-
-impl Iterator for Hot {
-    type Item = (Noun, Atom, Jet); // path,axis,jet
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.0.is_null() {
-            return None;
-        }
-        unsafe {
-            let res = ((*(self.0)).a_path, (*(self.0)).axis, (*(self.0)).jet);
-            *self = (*(self.0)).next;
-            Some(res)
-        }
-    }
-}
-
-struct HotMem {
-    a_path: Noun,
-    axis: Atom, // Axis of jetted formula in *battery*;
-    jet: Jet,
-    next: Hot,
 }
 
 impl Preserve for Hot {
     unsafe fn preserve(&mut self, stack: &mut NockStack) {
-        let mut it = self;
-        while !it.0.is_null() && stack.is_in_frame(it.0) {
-            let dest_mem = stack.struct_alloc_in_previous_frame(1);
-            copy_nonoverlapping(it.0, dest_mem, 1);
-            it.0 = dest_mem;
-            (*it.0).a_path.preserve(stack);
-            (*it.0).axis.preserve(stack);
-            it = &mut (*it.0).next;
+        if stack.is_in_frame(self.buffer) {
+            let new_buffer = stack.struct_alloc_in_previous_frame(self.length);
+            copy_nonoverlapping(self.buffer, new_buffer, self.length);
+            for i in 0..self.length {
+                stack.preserve(&mut (*new_buffer.add(i)).axis);
+                stack.preserve(&mut (*new_buffer.add(i)).path);
+            }
+            self.buffer = new_buffer;
         }
     }
 
     unsafe fn assert_in_stack(&self, stack: &NockStack) {
-        let mut it = self;
-        while !it.0.is_null() {
-            stack.assert_struct_is_in(it.0, 1);
-            (*it.0).a_path.assert_in_stack(stack);
-            (*it.0).axis.assert_in_stack(stack);
-            it = &mut (*it.0).next;
+        stack.assert_struct_is_in(self.buffer, self.length);
+        for i in 0..self.length {
+            (*self.buffer.add(i)).axis.assert_in_stack(stack);
+            (*self.buffer.add(i)).path.assert_in_stack(stack);
         }
     }
 }
