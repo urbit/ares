@@ -248,20 +248,27 @@ pub mod util {
                             let tape = rip(stack, 3, 1, atom)?;
                             T(stack, &[LEAF, tape])
                         }
-                        Right(_cell) => {
-                            // 'tank: {
-                            //     let scry = null_scry(context);
-                            //     if let Ok(tone) = mink(context, dat, cell.head(), scry) {
-                            //         if let Some(cell) = tone.cell() {
-                            //             if cell.head().raw_equals(D(0)) {
-                            //                 //  XX: need to check that this is
-                            //                 //      actually a path;
-                            //                 //      return leaf+"mook.mean" if not
-                            //                 break 'tank cell.tail();
-                            //             }
-                            //         }
-                            //     }
-                            {
+                        Right(cell) => {
+                            'tank: {
+                                let scry = null_scry(&mut context.stack);
+                                // if +mink didn't crash...
+                                if let Ok(tone) = mink(context, dat, cell.head(), scry) {
+                                    if let Some(tonc) = tone.cell() {
+                                        // ...and +mink didn't fail or block...
+                                        if tonc.head().raw_equals(D(0)) {
+                                            // ...return $tank from $tone
+                                            //  XX: need to check that this is
+                                            //      actually a tank;
+                                            //      return leaf+"mook.mean" if not
+                                            break 'tank tonc.tail();
+                                        }
+                                    } else {
+                                        panic!("+mink in +mook somehow returned atom {}", tone)
+                                    }
+                                }
+
+                                // This code only called when the break statement
+                                // above doesn't trigger
                                 let stack = &mut context.stack;
                                 let tape = tape(stack, "####");
                                 T(stack, &[LEAF, tape])
@@ -406,29 +413,24 @@ pub mod util {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::guard::init_guard;
     use crate::jets::util::test::{assert_jet, init_context};
     use crate::mem::NockStack;
     use crate::noun::{D, T};
-    use crate::serf::TERMINATOR;
-    use std::sync::Arc;
-
-    #[test]
-    fn init() {
-        // This needs to be done because TERMINATOR is lazy allocated, and if you don't
-        // do it before you call the unit tests it'll get allocated on the Rust heap
-        // inside an assert_no_alloc block.
-        //
-        // Also Rust has no primitive for pre-test setup / post-test teardown, so we
-        // do it in a test that we rely on being called before any other in this file,
-        // since we're already using single-threaded test mode to avoid race conditions
-        // (because Rust doesn't support test order dependencies either).
-        let _ = Arc::clone(&TERMINATOR);
-    }
 
     #[test]
     fn test_mink_success() {
         let context = &mut init_context();
         let stack = &mut context.stack;
+
+        // This needs to be done before it is safe to use interpreter::interpret
+        // directly or indirectly (which mink does). Normally, this is done in
+        // serf during startup.
+        //
+        // Rust has no primitive for pre-test setup / post-test teardown, so we
+        // use a unique NockContext for each test, and therefore also need to
+        // re-run guard page setup before each test.
+        init_guard(stack);
 
         let subj = D(0);
         let form = T(stack, &[D(1), D(53)]);
@@ -443,6 +445,8 @@ mod tests {
     fn test_mink_zapzap() {
         let context = &mut init_context();
         let stack = &mut context.stack;
+
+        init_guard(stack);
 
         let subj = D(0);
         let form = T(stack, &[D(0), D(0)]);
@@ -459,6 +463,8 @@ mod tests {
         let stack = &mut context.stack;
         let subj = D(0);
         let scry = D(0);
+
+        init_guard(stack);
 
         //  !=  !:  ?~  0  !!  53
         //  [ 11
